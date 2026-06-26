@@ -15,9 +15,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dropbear
 
-- name: Configure SSH server with key auth
+      - name: Configure SSH server with key auth
         run: |
-          sudo apt-get install -y dropbear
           sudo systemctl stop dropbear || true
           sudo systemctl disable dropbear || true
           sudo mkdir -p /etc/dropbear
@@ -33,37 +32,30 @@ jobs:
           sudo dropbear -p 2222 -F -E &
           sleep 3
           ss -tlnp | grep :2222
-          echo "Port 2222 is listening - SSH server ready"
-
-      - name: Test TCP connectivity through tunnel
-        run: |
-          echo "Testing if tunnel forwards TCP to localhost:2222..."
-          timeout 5 nc -zv localhost 2222 || echo "Local port 2222 not reachable (unexpected)"
-          echo "Tunnel should forward ssh.cluster.qzz.io:22 -> localhost:2222"
-
-      - name: Test local SSH connection
-        run: |
-          echo "Testing local SSH connection to dropbear..."
-          timeout 10 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -i /home/runner/.ssh/authorized_keys runner@localhost -p 2222 "echo 'Local SSH works'" || echo "Local SSH test failed (expected if no key auth yet)"
-          ss -tlnp | grep :2222
-
-      - name: Test tunnel connectivity
-        run: |
-          echo "Checking cloudflared tunnel status..."
-          curl -s http://localhost:20241/metrics | grep -E "tunnel|connections" || echo "Metrics endpoint check"
-          echo "Tunnel should be forwarding ssh.cluster.qzz.io -> localhost:2222"
+          echo "SSH server listening on port 2222"
 
       - name: Start Cloudflare Tunnel
         run: |
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" &
-          sleep 5
+          sleep 10
 
       - name: Show connection info
         run: |
           echo "=== SSH Access Ready ==="
-          echo "Connect: ssh runner@ssh.cluster.qzz.io"
-          echo "Port: 22 (Cloudflare tunnels TCP 2222)"
+          echo "Cloudflare Tunnel TCP ingress: ssh.cluster.qzz.io -> tcp://localhost:2222"
+          echo ""
+          echo "To connect, you have TWO options:"
+          echo ""
+          echo "Option 1: Direct SSH (requires Cloudflare Access SSH app in dashboard)"
+          echo "  ssh runner@ssh.cluster.qzz.io"
+          echo ""
+          echo "Option 2: TCP tunnel with cloudflared client (works with current setup)"
+          echo "  # Terminal 1: Run cloudflared locally"
+          echo "  cloudflared access tcp --hostname ssh.cluster.qzz.io --url localhost:2222"
+          echo "  # Terminal 2: Connect via local tunnel"
+          echo "  ssh -p 2222 runner@localhost"
+          echo ""
           echo "Timeout: 360 minutes"
           sleep 21600

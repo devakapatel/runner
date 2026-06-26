@@ -12,8 +12,12 @@ jobs:
   fleet:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    concurrency:
+      group: fleet-tracker
+      cancel-in-progress: false
     env:
       TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+      TRACKER_URL: http://localhost:8080
     steps:
       - uses: actions/checkout@v4
 
@@ -22,40 +26,55 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 jq curl
 
-      - name: Start Fleet Tracker (Dashboard API)
+      - name: Start/Join Fleet Tracker (port 8080)
         run: |
-          python3 tracker.py &
-          TRACKER_PID=$!
-          # Wait for tracker to be ready
-          for i in {1..30}; do
-            if curl -s http://localhost:8080/health >/dev/null 2>&1; then
-              echo "✅ Fleet Tracker ready"
-              break
-            fi
-            sleep 1
-          done
-          kill -0 $TRACKER_PID || { echo "Tracker died"; exit 1; }
+          # Check if tracker already running on port 8080
+          if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+            echo "✅ Tracker already running, joining existing"
+          else
+            echo "🚀 Starting new fleet tracker..."
+            nohup python3 tracker.py > /tmp/tracker.log 2>&1 &
+            TRACKER_PID=$!
+            echo $TRACKER_PID > /tmp/tracker.pid
+            # Wait for readiness
+            for i in {1..30}; do
+              if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+                echo "✅ Fleet Tracker ready on port 8080"
+                break
+              fi
+              sleep 1
+            done
+            # Verify it's still alive
+            kill -0 $TRACKER_PID || { echo "❌ Tracker died"; cat /tmp/tracker.log; exit 1; }
+          fi
 
-      - name: Start Cloudflare Tunnel (HTTP for Dashboard)
+      - name: Start/Join Cloudflare Tunnel
         run: |
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-          cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" &
-          TUNNEL_PID=$!
-          # Wait for tunnel to establish connections
-          for i in {1..30}; do
-            if curl -s http://localhost:20241/metrics 2>/dev/null | grep -q "tunnel"; then
-              echo "✅ Cloudflare Tunnel connected"
-              break
-            fi
-            sleep 1
-          done
-          kill -0 $TUNNEL_PID || { echo "Tunnel died"; exit 1; }
+          # Check if cloudflared already running with our token
+          if pgrep -f "cloudflared.*tunnel.*--token" >/dev/null; then
+            echo "✅ Cloudflare tunnel already running, joining existing"
+          else
+            echo "🚀 Starting new Cloudflare tunnel..."
+            curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+            sudo dpkg -i cloudflared.deb
+            nohup cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" > /tmp/tunnel.log 2>&1 &
+            TUNNEL_PID=$!
+            echo $TUNNEL_PID > /tmp/tunnel.pid
+            # Wait for tunnel connections
+            for i in {1..30}; do
+              if curl -s http://localhost:20241/metrics 2>/dev/null | grep -q "cloudflared_tunnel_connections"; then
+                echo "✅ Cloudflare Tunnel connected"
+                break
+              fi
+              sleep 1
+            done
+            kill -0 $TUNNEL_PID || { echo "❌ Tunnel died"; cat /tmp/tunnel.log; exit 1; }
+          fi
 
       - name: Register Runner with Fleet Tracker
         run: |
           RUNNER_ID="gh-${{ github.run_id }}-${{ github.run_attempt }}-$(hostname)-$RANDOM"
-          curl -s -X POST http://localhost:8080/api/register \
+          RESPONSE=$(curl -s -X POST http://localhost:8080/api/register \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg id "$RUNNER_ID" \
@@ -64,20 +83,19 @@ jobs:
               --arg arch "$(uname -m)" \
               --arg repo "${{ github.repository }}" \
               --arg run_id "${{ github.run_id }}" \
-              '{id: $id, labels: $labels, os: $os, arch: $arch, github_repo: $repo, github_run_id: $run_id}')" \
-            | jq -r '.id'
+              '{id: $id, labels: $labels, os: $os, arch: $arch, github_repo: $repo, github_run_id: $run_id}')")
+          echo "$RESPONSE" | jq -r '.id'
           echo "RUNNER_ID=$RUNNER_ID" >> $GITHUB_ENV
           echo "✅ Registered runner: $RUNNER_ID"
 
-      - name: Start Self-Hosted Runner + Heartbeat Loop
+      - name: Start Self-Hosted Runner + Heartbeat
         run: |
-          # Download and configure GitHub Actions runner
           mkdir -p ~/actions-runner && cd ~/actions-runner
           curl -o actions-runner-linux-x64-2.335.1.tar.gz -L https://github.com/actions/runner/releases/download/v2.335.1/actions-runner-linux-x64-2.335.1.tar.gz
           tar xzf actions-runner-linux-x64-2.335.1.tar.gz
           ./config.sh --url https://github.com/${{ github.repository }} --token ${{ secrets.RUNNER_TOKEN }} --labels ${{ inputs.runner_labels }} --ephemeral --unattended --name "$RUNNER_ID"
           
-          # Start heartbeat loop in background
+          # Heartbeat loop
           (
             while true; do
               sleep 10
@@ -87,11 +105,8 @@ jobs:
             done
           ) &
           HEARTBEAT_PID=$!
-          
-          # Cleanup on exit
           trap "kill $HEARTBEAT_PID 2>/dev/null; echo '🛑 Runner stopped'" EXIT INT TERM
           
-          # Run the runner
           ./run.sh
         env:
           RUNNER_ID: ${{ env.RUNNER_ID }}

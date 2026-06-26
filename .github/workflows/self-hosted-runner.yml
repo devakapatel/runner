@@ -18,6 +18,8 @@ jobs:
       - name: Configure SSH server with key auth
         run: |
           sudo apt-get install -y dropbear
+          sudo systemctl stop dropbear || true
+          sudo systemctl disable dropbear || true
           sudo mkdir -p /etc/dropbear
           sudo rm -f /etc/dropbear/dropbear_rsa_host_key /etc/dropbear/dropbear_ecdsa_host_key /etc/dropbear/dropbear_dss_host_key
           sudo dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
@@ -32,16 +34,10 @@ jobs:
           sleep 3
           ss -tlnp | grep :2222
 
-      - name: Test local SSH connection
+      - name: Verify SSH port is listening
         run: |
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/runner/.ssh/authorized_keys -p 2222 runner@localhost exit
-          echo "Local SSH test: SUCCESS"
-
-      - name: Test Cloudflare tunnel connectivity
-        run: |
-          curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://localhost:20241/metrics || echo "Tunnel metrics endpoint not accessible (expected)"
-          echo "Tunnel process check:"
-          ps aux | grep cloudflared
+          ss -tlnp | grep :2222
+          echo "Port 2222 is listening - SSH server ready"
 
       - name: Test local SSH connection
         run: |

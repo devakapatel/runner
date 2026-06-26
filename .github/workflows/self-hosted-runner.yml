@@ -2,10 +2,6 @@ name: SSH Access via Cloudflare Tunnel
 
 on:
   workflow_dispatch:
-    inputs:
-      tunnel_token:
-        description: 'Cloudflare Tunnel Token'
-        required: true
 
 jobs:
   ssh:

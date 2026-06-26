@@ -25,18 +25,32 @@ jobs:
       - name: Start Fleet Tracker (Dashboard API)
         run: |
           python3 tracker.py &
-          sleep 3
-          curl -s http://localhost:8080/health
-          echo "✅ Fleet Tracker started on port 8080"
+          TRACKER_PID=$!
+          # Wait for tracker to be ready
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+              echo "✅ Fleet Tracker ready"
+              break
+            fi
+            sleep 1
+          done
+          kill -0 $TRACKER_PID || { echo "Tracker died"; exit 1; }
 
       - name: Start Cloudflare Tunnel (HTTP for Dashboard)
         run: |
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" &
-          sleep 8
-          echo "✅ Cloudflare Tunnel started"
-          echo "📊 Dashboard: https://runners.cluster.qzz.io"
+          TUNNEL_PID=$!
+          # Wait for tunnel to establish connections
+          for i in {1..30}; do
+            if curl -s http://localhost:20241/metrics 2>/dev/null | grep -q "tunnel"; then
+              echo "✅ Cloudflare Tunnel connected"
+              break
+            fi
+            sleep 1
+          done
+          kill -0 $TUNNEL_PID || { echo "Tunnel died"; exit 1; }
 
       - name: Register Runner with Fleet Tracker
         run: |

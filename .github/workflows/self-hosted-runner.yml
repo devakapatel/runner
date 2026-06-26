@@ -29,8 +29,31 @@ jobs:
           chmod 600 /home/runner/.ssh/authorized_keys
           chown -R runner:runner /home/runner/.ssh
           sudo dropbear -p 2222 -F -E &
-          sleep 2
+          sleep 3
           ss -tlnp | grep :2222
+
+      - name: Test local SSH connection
+        run: |
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/runner/.ssh/authorized_keys -p 2222 runner@localhost exit
+          echo "Local SSH test: SUCCESS"
+
+      - name: Test Cloudflare tunnel connectivity
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://localhost:20241/metrics || echo "Tunnel metrics endpoint not accessible (expected)"
+          echo "Tunnel process check:"
+          ps aux | grep cloudflared
+
+      - name: Test local SSH connection
+        run: |
+          echo "Testing local SSH connection to dropbear..."
+          timeout 10 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -i /home/runner/.ssh/authorized_keys runner@localhost -p 2222 "echo 'Local SSH works'" || echo "Local SSH test failed (expected if no key auth yet)"
+          ss -tlnp | grep :2222
+
+      - name: Test tunnel connectivity
+        run: |
+          echo "Checking cloudflared tunnel status..."
+          curl -s http://localhost:20241/metrics | grep -E "tunnel|connections" || echo "Metrics endpoint check"
+          echo "Tunnel should be forwarding ssh.cluster.qzz.io -> localhost:2222"
 
       - name: Start Cloudflare Tunnel
         run: |

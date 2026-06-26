@@ -12,6 +12,9 @@ jobs:
   runner:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    permissions:
+      contents: read
+      administration: write
     env:
       TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
       TUNNEL_ID: ${{ secrets.CLOUDFLARE_TUNNEL_ID }}

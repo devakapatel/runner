@@ -1,21 +1,287 @@
-name: SSH Access via Cloudflare Tunnel
+name: Fleet Runner with Dashboard
 
 on:
   workflow_dispatch:
+    inputs:
+      runner_labels:
+        description: 'Runner labels (comma-separated)'
+        required: false
+        default: 'ubuntu,runner,fleet'
+      resolution:
+        description: 'Screen resolution (for VNC if needed)'
+        required: false
+        default: '1920x1080x24'
 
 jobs:
-  ssh:
+  fleet:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
       TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+      TRACKER_URL: http://localhost:8080
     steps:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y dropbear
+          sudo apt-get install -y python3 jq curl dropbear
 
-      - name: Configure SSH server with key auth
+      - name: Start Fleet Tracker (Dashboard API)
+        run: |
+          cat > /tmp/tracker.py << 'PYEOF'
+import json
+import threading
+import time
+import uuid
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class Tracker:
+    def __init__(self):
+        self.runners = {}
+        self.lock = threading.Lock()
+        self.cleanup_interval = 30
+        self.stale_threshold = 60
+        self._start_cleanup()
+
+    def register(self, runner_id, metadata):
+        with self.lock:
+            self.runners[runner_id] = {
+                "id": runner_id,
+                "metadata": metadata,
+                "registered_at": time.time(),
+                "last_heartbeat": time.time(),
+                "status": "active"
+            }
+            return runner_id
+
+    def heartbeat(self, runner_id):
+        with self.lock:
+            if runner_id in self.runners:
+                self.runners[runner_id]["last_heartbeat"] = time.time()
+                self.runners[runner_id]["status"] = "active"
+                return True
+            return False
+
+    def get_active_runners(self):
+        with self.lock:
+            now = time.time()
+            result = {}
+            for rid, r in self.runners.items():
+                last_seen_ago = int(now - r["last_heartbeat"])
+                age = int(now - r["registered_at"])
+                status = "active" if last_seen_ago < self.stale_threshold else "stale"
+                r["status"] = status
+                r["last_seen_ago"] = last_seen_ago
+                r["age"] = age
+                result[rid] = r
+            return result
+
+    def _cleanup(self):
+        while True:
+            time.sleep(self.cleanup_interval)
+            with self.lock:
+                now = time.time()
+                to_remove = [rid for rid, r in self.runners.items() 
+                           if now - r["last_heartbeat"] > self.stale_threshold * 3]
+                for rid in to_remove:
+                    del self.runners[rid]
+
+    def _start_cleanup(self):
+        t = threading.Thread(target=self._cleanup, daemon=True)
+        t.start()
+
+tracker = Tracker()
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/":
+            self.serve_dashboard()
+        elif self.path == "/api/runners":
+            self.serve_api_runners()
+        elif self.path == "/api/stats":
+            self.serve_api_stats()
+        elif self.path == "/health":
+            self.send_json({"status": "ok"})
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/api/register":
+            self.handle_register()
+        elif self.path == "/api/heartbeat":
+            self.handle_heartbeat()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def serve_dashboard(self):
+        html = """
+<!DOCTYPE html>
+<html><head>
+    <title>Runner Fleet Dashboard</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: #0d1117; color: #f0f6fc; min-height: 100vh; padding: 24px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+        h1 { font-size: 28px; font-weight: 600; color: #f0f6fc; }
+        .subtitle { color: #8b949e; font-size: 14px; margin-top: 4px; }
+        .refresh-btn { background: #238636; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
+        .refresh-btn:hover { background: #2ea043; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .stat { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+        .stat-value { font-size: 32px; font-weight: 600; color: #58a6ff; }
+        .stat-label { color: #8b949e; font-size: 13px; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+        table { width: 100%; border-collapse: collapse; background: #161b22; border-radius: 8px; overflow: hidden; border: 1px solid #30363d; }
+        th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid #30363d; }
+        th { background: #21262d; color: #8b949e; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+        tr:hover { background: #1f2428; }
+        tr:last-child td { border-bottom: none; }
+        .runner-id { font-family: 'SF Mono', Monaco, monospace; font-size: 13px; color: #f0f6fc; }
+        .labels { display: flex; flex-wrap: wrap; gap: 4px; }
+        .label { background: #21262d; padding: 2px 8px; border-radius: 4px; font-size: 11px; color: #a5d6ff; }
+        .meta { color: #8b949e; font-size: 13px; }
+        .time { color: #8b949e; font-size: 12px; font-variant-numeric: tabular-nums; }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+        .badge-active { background: #238636; color: #fff; }
+        .badge-stale { background: #d29922; color: #0d1117; }
+        .empty { text-align: center; padding: 60px 20px; color: #8b949e; }
+        .timestamp { color: #8b949e; font-size: 12px; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>🏃 Runner Fleet Dashboard</h1>
+                <div class="subtitle">GitHub Actions Self-Hosted Runner Monitor</div>
+            </div>
+            <button class="refresh-btn" onclick="load()">🔄 Refresh</button>
+        </div>
+        <div class="stats" id="stats"></div>
+        <table id="table">
+            <thead>
+                <tr>
+                    <th>Runner ID</th>
+                    <th>Labels</th>
+                    <th>OS / Arch</th>
+                    <th>Uptime</th>
+                    <th>Last Heartbeat</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+        </table>
+        <div class="timestamp" id="ts"></div>
+    </div>
+    <script>
+        function fmt(s) {
+            const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+            return h > 0 ? h + "h " + m + "m" : m + "m " + (s % 60) + "s";
+        }
+        function load() {
+            fetch("/api/runners").then(r => r.json()).then(data => {
+                const runners = Object.values(data);
+                document.getElementById("stats").innerHTML = `
+                    <div class="stat"><div class="stat-value">${runners.filter(r => r.status === "active").length}</div><div class="stat-label">Active</div></div>
+                    <div class="stat"><div class="stat-value">${runners.length}</div><div class="stat-label">Total</div></div>
+                    <div class="stat"><div class="stat-value">${runners.filter(r => r.status === "stale").length}</div><div class="stat-label">Stale</div></div>
+                `;
+                const tbody = document.getElementById("tbody");
+                if (runners.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="empty">No runners yet. Trigger workflow to spin up.</td></tr>';
+                } else {
+                    tbody.innerHTML = runners.map(r => `
+                        <tr>
+                            <td class="runner-id">${r.id.slice(0,8)}...${r.id.slice(-4)}</td>
+                            <td><div class="labels">${(r.metadata?.labels || "").split(",").filter(Boolean).map(l => '<span class="label">' + l.trim() + "</span>").join("") || "—"}</div></td>
+                            <td class="meta">${r.metadata?.os || "—"} / ${r.metadata?.arch || "—"}</td>
+                            <td class="time">${fmt(r.age)}</td>
+                            <td class="time">${fmt(r.last_seen_ago)}</td>
+                            <td><span class="badge ${r.status === "active" ? "badge-active" : "badge-stale"}">${r.status}</span></td>
+                        </tr>
+                    `).join("");
+                }
+                document.getElementById("ts").textContent = "Updated: " + new Date().toLocaleTimeString();
+            });
+        }
+        setInterval(load, 5000);
+        load();
+    </script>
+</body></html>
+"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode())
+
+    def serve_api_runners(self):
+        self.send_json(tracker.get_active_runners())
+
+    def serve_api_stats(self):
+        runners = tracker.get_active_runners()
+        self.send_json({
+            "total": len(runners),
+            "active": len([r for r in runners.values() if r["status"] == "active"]),
+            "stale": len([r for r in runners.values() if r["status"] == "stale"])
+        })
+
+    def handle_register(self):
+        length = int(self.headers.get("Content-Length", 0))
+        data = json.loads(self.rfile.read(length)) if length else {}
+        rid = data.get("id") or str(uuid.uuid4())[:8]
+        metadata = {
+            "labels": data.get("labels", ""),
+            "os": data.get("os", ""),
+            "arch": data.get("arch", ""),
+            "github_repo": data.get("github_repo", ""),
+            "github_run_id": data.get("github_run_id", "")
+        }
+        tracker.register(rid, metadata)
+        self.send_json({"id": rid, "status": "registered"})
+
+    def handle_heartbeat(self):
+        length = int(self.headers.get("Content-Length", 0))
+        data = json.loads(self.rfile.read(length)) if length else {}
+        rid = data.get("id")
+        if rid and tracker.heartbeat(rid):
+            self.send_json({"status": "ok"})
+        else:
+            self.send_response(404)
+            self.send_json({"error": "Runner not found"})
+
+    def send_json(self, data):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def log_message(self, format, *args):
+        pass
+
+if __name__ == "__main__":
+    server = HTTPServer(("0.0.0.0", 8080), Handler)
+    print("🏃 Fleet Tracker running on http://0.0.0.0:8080")
+    server.serve_forever()
+PYEOF
+          python3 /tmp/tracker.py &
+          sleep 3
+          curl -s http://localhost:8080/health
+          echo "✅ Fleet Tracker started on port 8080"
+
+      - name: Start Cloudflare Tunnel (HTTP for Dashboard)
+        run: |
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" &
+          sleep 8
+          echo "✅ Cloudflare Tunnel started"
+          echo "📊 Dashboard: https://fleet.cluster.qzz.io"
+
+      - name: Configure SSH Server (for direct access)
         run: |
           sudo systemctl stop dropbear || true
           sudo systemctl disable dropbear || true
@@ -30,32 +296,60 @@ jobs:
           chmod 600 /home/runner/.ssh/authorized_keys
           chown -R runner:runner /home/runner/.ssh
           sudo dropbear -p 2222 -F -E &
-          sleep 3
+          sleep 2
           ss -tlnp | grep :2222
-          echo "SSH server listening on port 2222"
+          echo "✅ SSH server on port 2222"
 
-      - name: Start Cloudflare Tunnel
+      - name: Register Runner with Fleet Tracker
         run: |
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-          cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" &
-          sleep 10
+          RUNNER_ID="gh-${{ github.run_id }}-${{ github.run_attempt }}-$(hostname)-$RANDOM"
+          curl -s -X POST http://localhost:8080/api/register \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg id "$RUNNER_ID" \
+              --arg labels "${{ inputs.runner_labels }}" \
+              --arg os "$(uname -s)" \
+              --arg arch "$(uname -m)" \
+              --arg repo "${{ github.repository }}" \
+              --arg run_id "${{ github.run_id }}" \
+              '{id: $id, labels: $labels, os: $os, arch: $arch, github_repo: $repo, github_run_id: $run_id}')" \
+            | jq -r '.id'
+          echo "RUNNER_ID=$RUNNER_ID" >> $GITHUB_ENV
+          echo "✅ Registered runner: $RUNNER_ID"
 
-      - name: Show connection info
+      - name: Start Self-Hosted Runner + Heartbeat Loop
         run: |
-          echo "=== SSH Access Ready ==="
-          echo "Cloudflare Tunnel TCP ingress: ssh.cluster.qzz.io -> tcp://localhost:2222"
-          echo ""
-          echo "To connect, you have TWO options:"
-          echo ""
-          echo "Option 1: Direct SSH (requires Cloudflare Access SSH app in dashboard)"
-          echo "  ssh runner@ssh.cluster.qzz.io"
-          echo ""
-          echo "Option 2: TCP tunnel with cloudflared client (works with current setup)"
-          echo "  # Terminal 1: Run cloudflared locally"
-          echo "  cloudflared access tcp --hostname ssh.cluster.qzz.io --url localhost:2222"
-          echo "  # Terminal 2: Connect via local tunnel"
-          echo "  ssh -p 2222 runner@localhost"
-          echo ""
+          # Download and configure GitHub Actions runner
+          mkdir -p ~/actions-runner && cd ~/actions-runner
+          curl -o actions-runner-linux-x64-2.335.1.tar.gz -L https://github.com/actions/runner/releases/download/v2.335.1/actions-runner-linux-x64-2.335.1.tar.gz
+          tar xzf actions-runner-linux-x64-2.335.1.tar.gz
+          ./config.sh --url https://github.com/${{ github.repository }} --token ${{ secrets.RUNNER_TOKEN }} --labels ${{ inputs.runner_labels }} --ephemeral --unattended --name "$RUNNER_ID"
+          
+          # Start heartbeat loop in background
+          (
+            while true; do
+              sleep 10
+              curl -s -X POST http://localhost:8080/api/heartbeat \
+                -H "Content-Type: application/json" \
+                -d "{\"id\": \"$RUNNER_ID\"}" > /dev/null
+            done
+          ) &
+          HEARTBEAT_PID=$!
+          
+          # Cleanup on exit
+          trap "kill $HEARTBEAT_PID 2>/dev/null; echo '🛑 Runner stopped'" EXIT INT TERM
+          
+          # Run the runner
+          ./run.sh
+        env:
+          RUNNER_ID: ${{ env.RUNNER_ID }}
+
+      - name: Show Connection Info
+        if: always()
+        run: |
+          echo "=== Fleet Runner Ready ==="
+          echo "📊 Dashboard: https://fleet.cluster.qzz.io"
+          echo "🔐 SSH (via TCP tunnel): ssh runner@ssh.cluster.qzz.io"
+          echo "   (Requires: cloudflared access tcp --hostname ssh.cluster.qzz.io --url localhost:2222)"
+          echo "🏃 Runner ID: $RUNNER_ID"
           echo "Timeout: 360 minutes"
-          sleep 21600

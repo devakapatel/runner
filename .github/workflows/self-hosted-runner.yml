@@ -1,40 +1,35 @@
-name: Self-Hosted Runner with VNC
+name: VNC Desktop via Cloudflare Tunnel
 
 on:
   workflow_dispatch:
     inputs:
-      runner_labels:
-        description: 'Runner labels'
+      resolution:
+        description: 'Screen resolution (WxHxD)'
         required: false
-        default: 'ubuntu,runner,vnc'
+        default: '1920x1080x24'
+      tunnel_token:
+        description: 'Cloudflare Tunnel Token'
+        required: true
 
 jobs:
-  runner:
+  vnc:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    permissions:
-      contents: read
-      actions: write
     env:
       TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-      TUNNEL_ID: ${{ secrets.CLOUDFLARE_TUNNEL_ID }}
-      TUNNEL_DOMAIN: ${{ secrets.CLOUDFLARE_TUNNEL_DOMAIN }}
-      RUNNER_LABELS: ${{ inputs.runner_labels }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb x11vnc novnc websockify xfce4 xfce4-goodies
+          sudo apt-get install -y xvfb x11vnc novnc websockify xfce4 xfce4-goodies dbus-x11
 
       - name: Start Xvfb + XFCE + x11vnc + noVNC
         run: |
-          Xvfb :99 -screen 0 1920x1080x24 &
+          Xvfb :99 -screen 0 ${{ inputs.resolution }} &
           export DISPLAY=:99
-          startxfce4 &
-          sleep 3
-          x11vnc -display :99 -forever -nopw -listen 0.0.0.0 -rfbport 5901 &
+          dbus-launch --exit-with-session startxfce4 &
+          sleep 5
+          x11vnc -display :99 -forever -nopw -listen 0.0.0.0 -rfbport 5901 -noxdamage &
           websockify --web /usr/share/novnc/ 6080 localhost:5901 &
 
       - name: Start Cloudflare Tunnel
@@ -42,11 +37,13 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" &
+          sleep 5
 
-      - name: Configure and run self-hosted runner
+      - name: Show connection info
         run: |
-          mkdir -p ~/actions-runner && cd ~/actions-runner
-          curl -o actions-runner-linux-x64-2.335.1.tar.gz -L https://github.com/actions/runner/releases/download/v2.335.1/actions-runner-linux-x64-2.335.1.tar.gz
-          tar xzf actions-runner-linux-x64-2.335.1.tar.gz
-          ./config.sh --url https://github.com/${{ github.repository }} --token ${{ secrets.RUNNER_TOKEN }} --labels ${{ inputs.runner_labels }} --ephemeral --unattended
-          ./run.sh
+          echo "=== VNC Desktop Ready ==="
+          echo "Access via browser: https://vnc.cluster.qzz.io/vnc.html"
+          echo "Or direct VNC: vnc://vnc.cluster.qzz.io (if TCP ingress configured)"
+          echo "Resolution: ${{ inputs.resolution }}"
+          echo "Timeout: 360 minutes"
+          sleep 21600

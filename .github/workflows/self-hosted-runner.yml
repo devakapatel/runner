@@ -23,6 +23,7 @@ jobs:
         run: |
           sudo apt-get install -y dropbear
           sudo mkdir -p /etc/dropbear
+          sudo rm -f /etc/dropbear/dropbear_rsa_host_key /etc/dropbear/dropbear_ecdsa_host_key
           sudo dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
           sudo dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key
           mkdir -p /home/runner/.ssh

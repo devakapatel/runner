@@ -29,7 +29,7 @@ jobs:
       - name: Start/Join Fleet Tracker (port 8080)
         run: |
           # Check if tracker already running on port 8080
-          if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+          if curl -s --connect-timeout 2 http://localhost:8080/health >/dev/null 2>&1; then
             echo "✅ Tracker already running, joining existing"
           else
             echo "🚀 Starting new fleet tracker..."
@@ -38,14 +38,17 @@ jobs:
             echo $TRACKER_PID > /tmp/tracker.pid
             # Wait for readiness
             for i in {1..30}; do
-              if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+              if curl -s --connect-timeout 2 http://localhost:8080/health >/dev/null 2>&1; then
                 echo "✅ Fleet Tracker ready on port 8080"
                 break
               fi
+              echo "  Waiting for tracker... ($i/30)"
               sleep 1
             done
-            # Verify it's still alive
+            # Verify it's still alive and API works
             kill -0 $TRACKER_PID || { echo "❌ Tracker died"; cat /tmp/tracker.log; exit 1; }
+            # Test API endpoint
+            curl -s -X POST http://localhost:8080/api/register -H "Content-Type: application/json" -d '{"id":"test","labels":"test"}' | grep -q registered && echo "✅ API working" || { echo "❌ API not responding"; cat /tmp/tracker.log; exit 1; }
           fi
 
       - name: Start/Join Cloudflare Tunnel
@@ -71,10 +74,11 @@ jobs:
             kill -0 $TUNNEL_PID || { echo "❌ Tunnel died"; cat /tmp/tunnel.log; exit 1; }
           fi
 
-      - name: Register Runner with Fleet Tracker
+- name: Register Runner with Fleet Tracker
         run: |
           RUNNER_ID="gh-${{ github.run_id }}-${{ github.run_attempt }}-$(hostname)-$RANDOM"
-          RESPONSE=$(curl -s -X POST http://localhost:8080/api/register \
+          echo "🔗 Registering runner: $RUNNER_ID"
+          RESPONSE=$(curl -v --connect-timeout 5 --max-time 10 -X POST http://localhost:8080/api/register \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg id "$RUNNER_ID" \
@@ -84,6 +88,7 @@ jobs:
               --arg repo "${{ github.repository }}" \
               --arg run_id "${{ github.run_id }}" \
               '{id: $id, labels: $labels, os: $os, arch: $arch, github_repo: $repo, github_run_id: $run_id}')")
+          echo "Response: $RESPONSE"
           echo "$RESPONSE" | jq -r '.id'
           echo "RUNNER_ID=$RUNNER_ID" >> $GITHUB_ENV
           echo "✅ Registered runner: $RUNNER_ID"

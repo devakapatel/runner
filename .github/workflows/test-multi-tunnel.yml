@@ -12,17 +12,11 @@ on:
           - '1'
           - '2'
           - '3'
-      runner_labels:
-        description: 'Runner labels (comma-separated)'
-        required: false
-        default: 'ubuntu,runner,fleet'
 
 jobs:
   test-runner:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    env:
-      RUNNER_SLOT: ${{ inputs.runner_slot }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,34 +31,34 @@ jobs:
           if [ "${{ inputs.runner_slot }}" = "1" ]; then
             echo "TUNNEL_TOKEN=${{ secrets.ONE }}" >> $GITHUB_OUTPUT
             echo "DOMAIN=1.cluster.qzz.io" >> $GITHUB_OUTPUT
-            echo "SLOT=1" >> $GITHUB_OUTPUT
           elif [ "${{ inputs.runner_slot }}" = "2" ]; then
             echo "TUNNEL_TOKEN=${{ secrets.TWO }}" >> $GITHUB_OUTPUT
             echo "DOMAIN=2.cluster.qzz.io" >> $GITHUB_OUTPUT
-            echo "SLOT=2" >> $GITHUB_OUTPUT
           elif [ "${{ inputs.runner_slot }}" = "3" ]; then
             echo "TUNNEL_TOKEN=${{ secrets.THREE }}" >> $GITHUB_OUTPUT
             echo "DOMAIN=3.cluster.qzz.io" >> $GITHUB_OUTPUT
-            echo "SLOT=3" >> $GITHUB_OUTPUT
           else
             echo "Invalid slot"
             exit 1
           fi
-          echo "✅ Resolved slot ${{ inputs.runner_slot }} -> ${{ steps.resolve-token.outputs.DOMAIN }}"
+          echo "✅ Slot ${{ inputs.runner_slot }} -> ${{ steps.resolve-token.outputs.DOMAIN }}"
 
-      - name: Start Fleet Tracker (port 8080)
+      - name: Start API Server (port 8080)
+        env:
+          RUNNER_SLOT: ${{ inputs.runner_slot }}
+          RUNNER_DOMAIN: ${{ steps.resolve-token.outputs.DOMAIN }}
         run: |
           python3 tracker.py &
           TRACKER_PID=$!
           # Wait for readiness
           for i in {1..30}; do
             if curl -s --connect-timeout 2 http://localhost:8080/health >/dev/null 2>&1; then
-              echo "✅ Fleet Tracker ready on port 8080"
+              echo "✅ API Server ready on port 8080"
               break
             fi
             sleep 1
           done
-          kill -0 $TRACKER_PID || { echo "❌ Tracker died"; exit 1; }
+          kill -0 $TRACKER_PID || { echo "❌ Server died"; exit 1; }
 
       - name: Start Cloudflare Tunnel
         env:
@@ -74,7 +68,7 @@ jobs:
           sudo dpkg -i cloudflared.deb
           nohup cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" > /tmp/tunnel.log 2>&1 &
           TUNNEL_PID=$!
-          # Wait for tunnel connections
+          # Wait for tunnel
           for i in {1..60}; do
             if curl -s http://localhost:20241/metrics 2>/dev/null | grep -q "cloudflared_tunnel"; then
               echo "✅ Cloudflare Tunnel connected for ${{ steps.resolve-token.outputs.DOMAIN }}"
@@ -84,94 +78,29 @@ jobs:
           done
           kill -0 $TUNNEL_PID || { echo "❌ Tunnel died"; cat /tmp/tunnel.log; exit 1; }
 
-      - name: Register Runner & Start Heartbeat
-        env:
-          DOMAIN: ${{ steps.resolve-token.outputs.DOMAIN }}
-          SLOT: ${{ steps.resolve-token.outputs.SLOT }}
+      - name: Test Local API
         run: |
-          RUNNER_ID="gh-slot-${SLOT}-${{ github.run_id }}-$(hostname)-$RANDOM"
-          echo "🔗 Registering runner: $RUNNER_ID on slot $SLOT (${DOMAIN})"
-          
-          # Register with local tracker
-          curl -s -X POST http://localhost:8080/api/register \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n \
-              --arg id "$RUNNER_ID" \
-              --arg labels "${{ inputs.runner_labels }}" \
-              --arg os "$(uname -s)" \
-              --arg arch "$(uname -m)" \
-              --arg repo "${{ github.repository }}" \
-              --arg run_id "${{ github.run_id }}" \
-              --arg slot "$SLOT" \
-              --arg domain "${DOMAIN}" \
-              '{id: $id, labels: $labels, os: $os, arch: $arch, github_repo: $repo, github_run_id: $run_id, slot: $slot, domain: $domain}')" \
-            | jq .
-          
-          echo "RUNNER_ID=$RUNNER_ID" >> $GITHUB_ENV
-          echo "DOMAIN=${DOMAIN}" >> $GITHUB_ENV
-          echo "SLOT=${SLOT}" >> $GITHUB_ENV
-
-          # Start heartbeat loop
-          (
-            while true; do
-              sleep 10
-              curl -s -X POST http://localhost:8080/api/heartbeat \
-                -H "Content-Type: application/json" \
-                -d "{\"id\": \"$RUNNER_ID\"}" > /dev/null
-            done
-          ) &
-          HEARTBEAT_PID=$!
-          trap "kill $HEARTBEAT_PID 2>/dev/null; echo '🛑 Runner stopped'" EXIT INT TERM
-
-      - name: Test Local API Endpoints
-        env:
-          DOMAIN: ${{ steps.resolve-token.outputs.DOMAIN }}
-          SLOT: ${{ steps.resolve-token.outputs.SLOT }}
-        run: |
-          echo "=== Testing Local API ==="
-          echo "Health check:"
+          echo "=== Local API (localhost:8080) ==="
           curl -s http://localhost:8080/health | jq .
-          
-          echo ""
-          echo "Runner list:"
           curl -s http://localhost:8080/api/runners | jq .
-          
-          echo ""
-          echo "Slot info:"
           curl -s http://localhost:8080/api/stats | jq .
 
-      - name: Test External Domain Access
+      - name: Test External Domain
         env:
           DOMAIN: ${{ steps.resolve-token.outputs.DOMAIN }}
         run: |
-          echo "=== Testing External Domain: https://${DOMAIN} ==="
-          sleep 5  # Allow DNS propagation
-          
-          echo "Health check via domain:"
-          curl -s --connect-timeout 10 --max-time 30 "https://${DOMAIN}/health" | jq . || echo "❌ Health check failed"
-          
-          echo ""
-          echo "Runner list via domain:"
-          curl -s --connect-timeout 10 --max-time 30 "https://${DOMAIN}/api/runners" | jq . || echo "❌ Runner list failed"
-          
-          echo ""
-          echo "Stats via domain:"
+          echo "=== External Domain: https://${DOMAIN} ==="
+          sleep 5
+          curl -s --connect-timeout 10 --max-time 30 "https://${DOMAIN}/health" | jq . || echo "❌ Health failed"
+          curl -s --connect-timeout 10 --max-time 30 "https://${DOMAIN}/api/runners" | jq . || echo "❌ Runners failed"
           curl -s --connect-timeout 10 --max-time 30 "https://${DOMAIN}/api/stats" | jq . || echo "❌ Stats failed"
 
-      - name: Start Self-Hosted Runner
-        run: |
-          mkdir -p ~/actions-runner && cd ~/actions-runner
-          curl -o actions-runner-linux-x64-2.335.1.tar.gz -L https://github.com/actions/runner/releases/download/v2.335.1/actions-runner-linux-x64-2.335.1.tar.gz
-          tar xzf actions-runner-linux-x64-2.335.1.tar.gz
-          ./config.sh --url https://github.com/${{ github.repository }} --token ${{ secrets.RUNNER_TOKEN }} --labels ${{ inputs.runner_labels }} --ephemeral --unattended --name "$RUNNER_ID"
-          ./run.sh
-        env:
-          RUNNER_ID: ${{ env.RUNNER_ID }}
-
-      - name: Show Connection Info
+      - name: Show Info
         if: always()
+        env:
+          DOMAIN: ${{ steps.resolve-token.outputs.DOMAIN }}
         run: |
-          echo "=== Runner Slot ${{ env.SLOT }} Ready ==="
+          echo "=== Runner Slot ${{ inputs.runner_slot }} Ready ==="
           echo "📊 Dashboard: https://${DOMAIN}"
-          echo "🏃 Runner ID: $RUNNER_ID"
+          echo "🔧 Local API: http://localhost:8080"
           echo "Timeout: 360 minutes"

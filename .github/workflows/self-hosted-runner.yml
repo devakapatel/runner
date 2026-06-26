@@ -25,11 +25,14 @@ jobs:
 
       - name: Start Xvfb + XFCE + x11vnc + noVNC
         run: |
-          Xvfb :99 -screen 0 ${{ inputs.resolution }} &
+          Xvfb :99 -screen 0 ${{ inputs.resolution }} -ac +extension GLX +extension RANDR +extension RENDER &
           export DISPLAY=:99
-          dbus-launch --exit-with-session startxfce4 &
+          sleep 2
+          dbus-daemon --session --fork --print-address > /tmp/dbus-session.txt
+          export $(cat /tmp/dbus-session.txt | grep -E '^DBUS_SESSION_BUS_ADDRESS=')
+          startxfce4 &
           sleep 5
-          x11vnc -display :99 -forever -nopw -listen 0.0.0.0 -rfbport 5901 -noxdamage &
+          x11vnc -display :99 -forever -nopw -listen 0.0.0.0 -rfbport 5901 -noxdamage -noxfixes -noxkb -nowf &
           websockify --web /usr/share/novnc/ 6080 localhost:5901 &
 
       - name: Start Cloudflare Tunnel

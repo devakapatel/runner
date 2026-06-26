@@ -63,18 +63,26 @@ jobs:
             nohup cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" > /tmp/tunnel.log 2>&1 &
             TUNNEL_PID=$!
             echo $TUNNEL_PID > /tmp/tunnel.pid
-            # Wait for tunnel connections
-            for i in {1..60}; do
+            # Wait for tunnel connections - check both metrics and log
+            for i in {1..90}; do
               if curl -s http://localhost:20241/metrics 2>/dev/null | grep -q "cloudflared_tunnel"; then
-                echo "✅ Cloudflare Tunnel connected"
+                echo "✅ Cloudflare Tunnel connected (metrics show active)"
                 break
               fi
-              echo "  Waiting for tunnel... ($i/60)"
+              # Also check log for connection messages
+              if grep -q "Registered tunnel connection\|Connection registered" /tmp/tunnel.log 2>/dev/null; then
+                echo "✅ Cloudflare Tunnel connected (log shows registration)"
+                break
+              fi
+              echo "  Waiting for tunnel... ($i/90)"
               sleep 1
             done
             kill -0 $TUNNEL_PID || { echo "❌ Tunnel died"; cat /tmp/tunnel.log; exit 1; }
             # Show tunnel status
-            curl -s http://localhost:20241/metrics | head -20
+            echo "--- Tunnel metrics ---"
+            curl -s http://localhost:20241/metrics | head -30
+            echo "--- Tunnel log (last 20 lines) ---"
+            tail -20 /tmp/tunnel.log
           fi
 
       - name: Register Runner with Fleet Tracker

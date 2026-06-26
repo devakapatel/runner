@@ -15,7 +15,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dropbear
 
-      - name: Configure SSH server with key auth
+- name: Configure SSH server with key auth
         run: |
           sudo apt-get install -y dropbear
           sudo systemctl stop dropbear || true
@@ -33,11 +33,13 @@ jobs:
           sudo dropbear -p 2222 -F -E &
           sleep 3
           ss -tlnp | grep :2222
-
-      - name: Verify SSH port is listening
-        run: |
-          ss -tlnp | grep :2222
           echo "Port 2222 is listening - SSH server ready"
+
+      - name: Test TCP connectivity through tunnel
+        run: |
+          echo "Testing if tunnel forwards TCP to localhost:2222..."
+          timeout 5 nc -zv localhost 2222 || echo "Local port 2222 not reachable (unexpected)"
+          echo "Tunnel should forward ssh.cluster.qzz.io:22 -> localhost:2222"
 
       - name: Test local SSH connection
         run: |

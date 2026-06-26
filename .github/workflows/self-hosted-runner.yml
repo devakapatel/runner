@@ -74,7 +74,7 @@ jobs:
             kill -0 $TUNNEL_PID || { echo "❌ Tunnel died"; cat /tmp/tunnel.log; exit 1; }
           fi
 
-- name: Register Runner with Fleet Tracker
+      - name: Register Runner with Fleet Tracker
         run: |
           RUNNER_ID="gh-${{ github.run_id }}-${{ github.run_attempt }}-$(hostname)-$RANDOM"
           echo "🔗 Registering runner: $RUNNER_ID"

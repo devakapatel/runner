@@ -1,18 +1,14 @@
-name: VNC Desktop via Cloudflare Tunnel
+name: SSH Access via Cloudflare Tunnel
 
 on:
   workflow_dispatch:
     inputs:
-      resolution:
-        description: 'Screen resolution (WxHxD)'
-        required: false
-        default: '1920x1080x24'
       tunnel_token:
         description: 'Cloudflare Tunnel Token'
         required: true
 
 jobs:
-  vnc:
+  ssh:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
@@ -21,19 +17,18 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb x11vnc novnc websockify xfce4 xfce4-goodies dbus-x11
+          sudo apt-get install -y dropbear
 
-      - name: Start Xvfb + XFCE + x11vnc + noVNC
+      - name: Configure SSH server with key auth
         run: |
-          Xvfb :99 -screen 0 ${{ inputs.resolution }} -ac +extension GLX +extension RANDR +extension RENDER &
-          export DISPLAY=:99
-          sleep 2
-          dbus-daemon --session --fork --print-address > /tmp/dbus-session.txt
-          export $(cat /tmp/dbus-session.txt | grep -E '^DBUS_SESSION_BUS_ADDRESS=')
-          startxfce4 &
-          sleep 5
-          x11vnc -display :99 -forever -nopw -listen 0.0.0.0 -rfbport 5901 -noxdamage -noxfixes -noxkb -nowf &
-          websockify --web /usr/share/novnc/ 6080 localhost:5901 &
+          dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
+          dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key
+          mkdir -p /home/runner/.ssh
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/.ssh/authorized_keys
+          chmod 700 /home/runner/.ssh
+          chmod 600 /home/runner/.ssh/authorized_keys
+          chown -R runner:runner /home/runner/.ssh
+          dropbear -p 2222 -F -E &
 
       - name: Start Cloudflare Tunnel
         run: |
@@ -44,9 +39,8 @@ jobs:
 
       - name: Show connection info
         run: |
-          echo "=== VNC Desktop Ready ==="
-          echo "Access via browser: https://vnc.cluster.qzz.io/vnc.html"
-          echo "Or direct VNC: vnc://vnc.cluster.qzz.io (if TCP ingress configured)"
-          echo "Resolution: ${{ inputs.resolution }}"
+          echo "=== SSH Access Ready ==="
+          echo "Connect: ssh runner@ssh.cluster.qzz.io"
+          echo "Port: 22 (Cloudflare tunnels TCP 2222)"
           echo "Timeout: 360 minutes"
           sleep 21600

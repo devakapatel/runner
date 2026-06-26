@@ -40,9 +40,10 @@ jobs:
           sudo dpkg -i cloudflared.deb
           cloudflared tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" &
 
-      - name: Run self-hosted runner
-        uses: actions/runner@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          labels: ${{ inputs.runner_labels }}
-          ephemeral: true
+      - name: Configure and run self-hosted runner
+        run: |
+          mkdir -p ~/actions-runner && cd ~/actions-runner
+          curl -o actions-runner-linux-x64-2.335.1.tar.gz -L https://github.com/actions/runner/releases/download/v2.335.1/actions-runner-linux-x64-2.335.1.tar.gz
+          tar xzf actions-runner-linux-x64-2.335.1.tar.gz
+          ./config.sh --url https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }} --labels ${{ inputs.runner_labels }} --ephemeral --unattended
+          ./run.sh

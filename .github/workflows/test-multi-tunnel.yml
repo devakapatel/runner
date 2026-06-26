@@ -95,6 +95,18 @@ jobs:
           curl -s --connect-timeout 10 --max-time 30 "https://${DOMAIN}/api/runners" | jq . || echo "❌ Runners failed"
           curl -s --connect-timeout 10 --max-time 30 "https://${DOMAIN}/api/stats" | jq . || echo "❌ Stats failed"
 
+      - name: Keep Runner Alive (Serve Traffic)
+        run: |
+          echo "🏃 Runner active - serving traffic on https://${DOMAIN}"
+          echo "Press Ctrl+C to stop (or wait for 360 min timeout)"
+          # Keep alive - serve traffic through tunnel
+          while true; do
+            sleep 60
+            echo "⏰ $(date) - Runner still alive, slot ${{ inputs.runner_slot }}"
+          done
+        env:
+          DOMAIN: ${{ steps.resolve-token.outputs.DOMAIN }}
+
       - name: Show Info
         if: always()
         env:

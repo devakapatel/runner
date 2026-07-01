@@ -13,34 +13,35 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           echo "ffmpeg $(ffmpeg -version 2>&1 | head -n1)"
-          echo "python3 $(python3 --version)"
 
       - name: Download video
         run: |
           echo "Downloading Big Buck Bunny (1080p H.264)..."
           curl -sL -o input.mov \
             https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_1080p_h264.mov
-          SZ=$(stat -c%s input.mov)
-          echo "Done: $(numfmt --to=iec $SZ)  ($(ls -lh input.mov | awk '{print $5}'))"
+          ls -lh input.mov
 
       - name: Probe source
         run: |
           echo "=== Source ==="
-          ffprobe -v quiet -print_format json -show_streams -show_format input.mov |
-            python3 -c "
+          ffprobe -v quiet -print_format json -show_streams -show_format input.mov \
+            | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-for s in d['streams']:
-    c=s.get('codec_type','?')
-    n=s.get('codec_name','?')
-    w=s.get('width','?')
-    h=s.get('height','?')
-    fr=s.get('r_frame_rate','?')
-    print(f'  [{c:5}] {n} {w}x{h} @ {fr} fps')
-print(f'  Duration: {float(d[\"format\"][\"duration\"]):.1f}s')
-print(f'  Size:     {int(d[\"format\"][\"size\"])/1e6:.0f} MB')
-print(f'  Bitrate:  {float(d[\"format\"][\"bit_rate\"])/1e6:.0f} Mb/s')
-"
+for s in d["streams"]:
+    c=s.get("codec_type","?")
+    n=s.get("codec_name","?")
+    w=s.get("width","?")
+    h=s.get("height","?")
+    fr=s.get("r_frame_rate","?")
+    print(f"  [{c:5}] {n} {w}x{h} @ {fr} fps")
+dur=float(d["format"]["duration"])
+sz=int(d["format"]["size"])
+br=float(d["format"]["bit_rate"])
+print(f"  Duration: {dur:.1f}s")
+print(f"  Size:     {sz/1e6:.0f} MB")
+print(f"  Bitrate:  {br/1e6:.0f} Mb/s")
+'
 
       - name: Transcode to 60fps (lossless)
         run: |
@@ -59,28 +60,30 @@ print(f'  Bitrate:  {float(d[\"format\"][\"bit_rate\"])/1e6:.0f} Mb/s')
             output.mkv 2>&1
 
           echo ""
-          echo "=== Output ==="
           SZ=$(stat -c%s output.mkv 2>/dev/null || echo 0)
-          echo "  Size: $(numfmt --to=iec $SZ)  ($(ls -lh output.mkv | awk '{print $5}'))"
+          echo "=== Output: $(numfmt --to=iec $SZ 2>/dev/null || ls -lh output.mkv | awk '{print $5}') ==="
 
       - name: Verify output
         run: |
           echo "=== Output streams ==="
-          ffprobe -v quiet -print_format json -show_streams -show_format output.mkv |
-            python3 -c "
+          ffprobe -v quiet -print_format json -show_streams -show_format output.mkv \
+            | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-for s in d['streams']:
-    c=s.get('codec_type','?')
-    n=s.get('codec_name','?')
-    w=s.get('width','?')
-    h=s.get('height','?')
-    fr=s.get('r_frame_rate','?')
-    print(f'  [{c:5}] {n} {w}x{h} @ {fr} fps')
-print(f'  Duration: {float(d[\"format\"][\"duration\"]):.1f}s')
-print(f'  Size:     {int(d[\"format\"][\"size\"])/1e6:.0f} MB')
-print(f'  Bitrate:  {int(d[\"format\"][\"bit_rate\"])/1e6:.0f} Mb/s')
-"
+for s in d["streams"]:
+    c=s.get("codec_type","?")
+    n=s.get("codec_name","?")
+    w=s.get("width","?")
+    h=s.get("height","?")
+    fr=s.get("r_frame_rate","?")
+    print(f"  [{c:5}] {n} {w}x{h} @ {fr} fps")
+dur=float(d["format"]["duration"])
+sz=int(d["format"]["size"])
+br=float(d["format"]["bit_rate"])
+print(f"  Duration: {dur:.1f}s")
+print(f"  Size:     {sz/1e6:.0f} MB")
+print(f"  Bitrate:  {br/1e6:.0f} Mb/s")
+'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

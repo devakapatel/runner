@@ -1,0 +1,48 @@
+name: macOS System Specs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  specs:
+    runs-on: macos-latest
+    steps:
+      - run: |
+          echo "========== CPU =========="
+          sysctl -n machdep.cpu.brand_string
+          sysctl -n hw.physicalcpu hw.logicalcpu
+          sysctl -n hw.perflevel0.name hw.perflevel0.cpus 2>/dev/null || true
+          sysctl -n hw.perflevel1.name hw.perflevel1.cpus 2>/dev/null || true
+
+          echo ""
+          echo "========== RAM =========="
+          sysctl -n hw.memsize | awk '{printf "%.0f GB\n", $1/1073741824}'
+          sysctl -n hw.memsize
+
+          echo ""
+          echo "========== GPU / Media Engine =========="
+          system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset|VRAM|Model"
+          echo "-- VideoToolbox encoders --"
+          HandBrakeCLI --help 2>/dev/null | grep -i "vt_h" || echo "HandBrake not installed yet"
+          echo "-- FFmpeg encoders --"
+          ffmpeg -encoders 2>/dev/null | grep videotoolbox || echo "ffmpeg videotoolbox unavailable"
+
+          echo ""
+          echo "========== Disk =========="
+          df -h / | tail -1
+          diskutil info / | grep -E "Total Size|Free Space|Filesystem"
+
+          echo ""
+          echo "========== macOS Version =========="
+          sw_vers
+          uname -a
+
+          echo ""
+          echo "========== Architecture =========="
+          uname -m
+          sysctl -n hw.optional.arm64 2>/dev/null || true
+
+          echo ""
+          echo "========== Thermal / Power =========="
+          pmset -g therm 2>/dev/null || true
+          sysctl -n machdep.cpu.thermal_level 2>/dev/null || true

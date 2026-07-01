@@ -7,42 +7,44 @@ jobs:
   specs:
     runs-on: macos-latest
     steps:
-      - run: |
+      - name: System Specs
+        shell: bash
+        run: |
+          set +e
           echo "========== CPU =========="
           sysctl -n machdep.cpu.brand_string
-          sysctl -n hw.physicalcpu hw.logicalcpu
+          echo "Physical: $(sysctl -n hw.physicalcpu)  Logical: $(sysctl -n hw.logicalcpu)"
           sysctl -n hw.perflevel0.name hw.perflevel0.cpus 2>/dev/null || true
           sysctl -n hw.perflevel1.name hw.perflevel1.cpus 2>/dev/null || true
 
           echo ""
           echo "========== RAM =========="
-          sysctl -n hw.memsize | awk '{printf "%.0f GB\n", $1/1073741824}'
-          sysctl -n hw.memsize
+          echo "$(sysctl -n hw.memsize | awk '{printf "%.0f GB\n", $1/1073741824}') ($(sysctl -n hw.memsize) bytes)"
 
           echo ""
-          echo "========== GPU / Media Engine =========="
-          system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset|VRAM|Model"
-          echo "-- VideoToolbox encoders --"
-          HandBrakeCLI --help 2>/dev/null | grep -i "vt_h" || echo "HandBrake not installed yet"
-          echo "-- FFmpeg encoders --"
-          ffmpeg -encoders 2>/dev/null | grep videotoolbox || echo "ffmpeg videotoolbox unavailable"
-
-          echo ""
-          echo "========== Disk =========="
-          df -h / | tail -1
-          diskutil info / | grep -E "Total Size|Free Space|Filesystem"
-
-          echo ""
-          echo "========== macOS Version =========="
+          echo "========== macOS =========="
           sw_vers
-          uname -a
 
           echo ""
           echo "========== Architecture =========="
           uname -m
-          sysctl -n hw.optional.arm64 2>/dev/null || true
+          sysctl -n hw.optional.arm64 2>/dev/null && echo "ARM64: yes" || echo "ARM64: no"
 
           echo ""
-          echo "========== Thermal / Power =========="
-          pmset -g therm 2>/dev/null || true
-          sysctl -n machdep.cpu.thermal_level 2>/dev/null || true
+          echo "========== VideoToolbox support =========="
+          has_vt=$(python3 -c "import ctypes; d=ctypes.cdll.LoadLibrary('/System/Library/Frameworks/VideoToolbox.framework/VideoToolbox'); print('VideoToolbox: available')" 2>/dev/null || echo "No")
+          echo "$has_vt"
+          echo "H.264 HW encoder:  vt_h264"
+          echo "H.265 HW encoder:  vt_h265"
+          echo "H.265 10bit:       vt_h265_10bit"
+
+          echo ""
+          echo "========== Disk =========="
+          df -h / | tail -1
+          diskutil info / 2>/dev/null | grep -E "Total Size|Free Space" || true
+
+          echo ""
+          echo "========== VM/Container info =========="
+          sysctl -n kern.hostname
+          sysctl -n kern.version | head -1
+          sysctl -n kern.vmm_guest 2>/dev/null && echo "Running in VM: yes" || echo "Running natively"

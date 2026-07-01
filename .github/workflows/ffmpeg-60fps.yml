@@ -12,42 +12,23 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
-          echo "ffmpeg $(ffmpeg -version 2>&1 | head -n1)"
+          ffmpeg -version 2>&1 | head -n1
 
       - name: Download video
         run: |
-          echo "Downloading Big Buck Bunny (1080p H.264)..."
+          echo "Downloading..."
           curl -sL -o input.mov \
             https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_1080p_h264.mov
           ls -lh input.mov
 
       - name: Probe source
         run: |
-          echo "=== Source ==="
-          ffprobe -v quiet -print_format json -show_streams -show_format input.mov \
-            | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-for s in d["streams"]:
-    c=s.get("codec_type","?")
-    n=s.get("codec_name","?")
-    w=s.get("width","?")
-    h=s.get("height","?")
-    fr=s.get("r_frame_rate","?")
-    print(f"  [{c:5}] {n} {w}x{h} @ {fr} fps")
-dur=float(d["format"]["duration"])
-sz=int(d["format"]["size"])
-br=float(d["format"]["bit_rate"])
-print(f"  Duration: {dur:.1f}s")
-print(f"  Size:     {sz/1e6:.0f} MB")
-print(f"  Bitrate:  {br/1e6:.0f} Mb/s")
-'
+          ffprobe -hide_banner -i input.mov 2>&1 | grep -E "Stream|Duration|bitrate"
 
       - name: Transcode to 60fps (lossless)
         run: |
-          echo "=== Transcode ==="
-          echo "  Started: $(date -u +%H:%M:%S) UTC"
-          echo "  Params:  libx264 crf=0 preset=veryslow  minterpolate: 30->60fps"
+          echo "Started: $(date -u +%H:%M:%S) UTC"
+          echo "Params:  libx264 crf=0 preset=veryslow  minterpolate 30->60fps"
           echo ""
 
           ffmpeg -nostdin \
@@ -60,30 +41,11 @@ print(f"  Bitrate:  {br/1e6:.0f} Mb/s")
             output.mkv 2>&1
 
           echo ""
-          SZ=$(stat -c%s output.mkv 2>/dev/null || echo 0)
-          echo "=== Output: $(numfmt --to=iec $SZ 2>/dev/null || ls -lh output.mkv | awk '{print $5}') ==="
+          ls -lh output.mkv
 
       - name: Verify output
         run: |
-          echo "=== Output streams ==="
-          ffprobe -v quiet -print_format json -show_streams -show_format output.mkv \
-            | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-for s in d["streams"]:
-    c=s.get("codec_type","?")
-    n=s.get("codec_name","?")
-    w=s.get("width","?")
-    h=s.get("height","?")
-    fr=s.get("r_frame_rate","?")
-    print(f"  [{c:5}] {n} {w}x{h} @ {fr} fps")
-dur=float(d["format"]["duration"])
-sz=int(d["format"]["size"])
-br=float(d["format"]["bit_rate"])
-print(f"  Duration: {dur:.1f}s")
-print(f"  Size:     {sz/1e6:.0f} MB")
-print(f"  Bitrate:  {br/1e6:.0f} Mb/s")
-'
+          ffprobe -hide_banner -i output.mkv 2>&1 | grep -E "Stream|Duration|bitrate"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -28,12 +28,12 @@ jobs:
       - name: Transcode to 60fps (lossless)
         run: |
           echo "Started: $(date -u +%H:%M:%S) UTC"
-          echo "Params:  libx264 crf=0 preset=veryslow  minterpolate 30->60fps"
+          echo "Params:  libx264 crf=15 preset=medium  minterpolate 30->60fps"
           echo ""
 
           ffmpeg -nostdin \
             -i input.mov \
-            -c:v libx264 -crf 0 -preset veryslow \
+            -c:v libx264 -crf 15 -preset medium \
             -vf "minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:me=epzs" \
             -c:a copy \
             -threads 0 \

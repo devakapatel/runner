@@ -1,0 +1,103 @@
+name: FFmpeg 60fps (No Quality Loss)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  transcode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg pv
+          echo "ffmpeg $(ffmpeg -version | head -1)"
+          echo "pv $(pv --version | head -1)"
+
+      - name: Download Big Buck Bunny (1080p H.264)
+        run: |
+          echo "Downloading..."
+          wget -q --show-progress \
+            -O input.mov \
+            https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_1080p_h264.mov
+          echo "Done: $(ls -lh input.mov)"
+
+      - name: Probe source
+        run: |
+          echo "=== Source streams ==="
+          ffprobe -v quiet -print_format json -show_streams -show_format input.mov | \
+            python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for s in d.get('streams', []):
+    print(f\"  [{s['codec_type']}] {s.get('codec_name','?')} -> {s.get('width','?')}x{s.get('height','?')} @ {s.get('r_frame_rate','?')}fps\")
+print(f\"  duration: {d.get('format',{}).get('duration','?')}s\")
+print(f\"  size: {int(d.get('format',{}).get('size',0))/1e6:.0f} MB\")
+"
+
+      - name: Transcode to 60fps (lossless, minterpolate)
+        run: |
+          echo "=== Starting encode ==="
+          echo "  Input:  input.mov ($(wc -c < input.mov | numfmt --to=iec) bytes)"
+          echo "  Output: output.mkv"
+          echo "  Filter: minterpolate (24/30fps -> 60fps)"
+          echo "  Codec:  libx264 lossless (crf=0) preset=veryslow"
+          echo "  Audio:  stream copy (no re-encode)"
+          echo "  Started: $(date -u +%H:%M:%S)"
+          echo ""
+
+          ffmpeg -i input.mov \
+            -c:v libx264 -crf 0 -preset veryslow \
+            -vf "minterpolate=fps=60:mi_mode=mci:mc_mode=aoblc:me_mode=bidir:me=epzs" \
+            -c:a copy \
+            -threads 0 \
+            -progress pipe:1 \
+            -stats_period 5 \
+            output.mkv 2>&1 | \
+            while IFS= read -r line; do
+              case "$line" in
+                out_time_us=*)
+                  us=${line#out_time_us=}
+                  sec=$((us / 1000000))
+                  printf "\r  ⏱  %02d:%02d:%02d  " $((sec/3600)) $((sec%3600/60)) $((sec%60))
+                  ;;
+                fps=*)
+                  fps=${line#fps=}
+                  speed_val=$(grep -oP '(?<=speed=)[\d.]+' <<< "$line" || echo "?")
+                  printf "fps: %s  speed: %sx" "$fps" "$speed_val"
+                  ;;
+                total_size=*)
+                  ;;
+                progress=*)
+                  status=${line#progress=}
+                  if [ "$status" = "end" ]; then
+                    printf "\n  ✅ Encode complete\n"
+                  fi
+                  ;;
+              esac
+            done
+
+          echo ""
+          echo "=== Output ==="
+          ls -lh output.mkv
+
+      - name: Verify output
+        run: |
+          echo "=== Output streams ==="
+          ffprobe -v quiet -print_format json -show_streams -show_format output.mkv | \
+            python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for s in d.get('streams', []):
+    print(f\"  [{s['codec_type']}] {s.get('codec_name','?')} -> {s.get('width','?')}x{s.get('height','?')} @ {s.get('r_frame_rate','?')}fps\")
+print(f\"  duration: {d.get('format',{}).get('duration','?')}s\")
+print(f\"  size: {int(d.get('format',{}).get('size',0))/1e6:.0f} MB\")
+"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: big-buck-bunny-60fps-lossless
+          path: output.mkv
+          retention-days: 7

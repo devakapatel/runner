@@ -18,7 +18,7 @@ jobs:
         run: |
           echo "Downloading..."
           wget -O input.mov \
-            https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_1080p_h264.mov 2>&1
+            https://github.com/devakapatel/files/releases/download/bbb/big_buck_bunny_1080p_h264.mov 2>&1
           ls -lh input.mov
 
       - name: Probe source

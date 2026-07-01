@@ -17,8 +17,8 @@ jobs:
       - name: Download video
         run: |
           echo "Downloading..."
-          curl -sL -o input.mov \
-            https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_1080p_h264.mov
+          wget -O input.mov \
+            https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_1080p_h264.mov 2>&1
           ls -lh input.mov
 
       - name: Probe source
